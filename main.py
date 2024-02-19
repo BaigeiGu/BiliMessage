@@ -1,10 +1,11 @@
 import json
+import logging
 import os
 import time
 from urllib.parse import urlparse
+
 import requests
 import schedule
-import logging
 
 import BiliApi
 import WindowsToast
@@ -28,27 +29,13 @@ UserListFile.close()
 
 
 def download_user_avatar(talker_id, picurl):
-    with open(f'{DATA_PATH}/images/{talker_id}.png', mode='bw') as f:
+    with open(f'{DATA_PATH}/images/{talker_id}.png', mode='wb') as f:
         r = requests.get(picurl)
         f.write(r.content)
 
 
 def updateMsgList(talker_id, last_msg_timestamp):
     UserList[talker_id]['last_msg_timestamp'] = last_msg_timestamp
-    UserListFile = open(f'{DATA_PATH}/userlist.json',
-                        mode='w',
-                        encoding='UTF-8')
-    UserListFile.write(json.dumps(UserList, ensure_ascii=False))
-    UserListFile.close()
-
-
-def updateUserList(talker_id, last_msg_timestamp):
-    userInfo = Bili.getUserInfo(user_mid=talker_id)
-    userData = {
-        'name': userInfo['card']['name'],
-        'last_msg_timestamp': last_msg_timestamp
-    }
-    UserList[talker_id] = userData
 
     UserListFile = open(f'{DATA_PATH}/userlist.json',
                         mode='w',
@@ -56,27 +43,48 @@ def updateUserList(talker_id, last_msg_timestamp):
     UserListFile.write(json.dumps(UserList, ensure_ascii=False))
     UserListFile.close()
 
-    download_user_avatar(talker_id=talker_id, picurl=userInfo['card']['face'])
 
+def updateUserList(talker_id,
+                   last_msg_timestamp: int | None = None,
+                   sysinfo: tuple | None = None):
+    # sysinfo:tuple (name:str,picurl:str)
 
-def updateUserList_SysMsg(talker_id, name, picurl, last_msg_timestamp):
-    filepath = urlparse(picurl).path
-    pic_name = os.path.basename(filepath)
+    if sysinfo == None:
+        userInfo = Bili.getUserInfo(user_mid=talker_id)
+        picurl = userInfo['card']['face']
+        name = userInfo['card']['name']
+    else:
+        name, picurl = sysinfo
 
-    download_user_avatar(talker_id, picurl)
+    pic_filepath = urlparse(picurl).path
+    pic_name = os.path.basename(pic_filepath)
+
+    if talker_id in UserList.keys():
+        # 若已经录入过此用户
+        if pic_name != UserList[talker_id]['avartar_file_name']:
+            # 若头像有更新 则重新下载
+            download_user_avatar(talker_id=talker_id, picurl=picurl)
+
+        if last_msg_timestamp == None:
+            # 若未传入新的消息时间 取上一条消息时间
+            last_msg_timestamp = UserList[talker_id]['last_msg_timestamp']
+    else:
+        download_user_avatar(talker_id=talker_id, picurl=picurl)
+
 
     userData = {
         'name': name,
         'last_msg_timestamp': last_msg_timestamp,
         'avartar_file_name': pic_name,
-        'last_avatar_timestamp': int(time.time())
+        'last_avatar_timestamp': int(time.time()*1000000)
     }
+
     UserList[talker_id] = userData
 
     UserListFile = open(f'{DATA_PATH}/userlist.json',
-                        mode='w+',
+                        mode='w',
                         encoding='UTF-8')
-    UserListFile.write(json.dumps(UserList))
+    UserListFile.write(json.dumps(UserList, ensure_ascii=False))
     UserListFile.close()
 
 
@@ -90,15 +98,21 @@ def newMessage(item):
     else:
         last_msg_content = json.loads(last_msg['content'])
 
-    if not talker_id in UserList.keys():
-        if not 'account_info' in item.keys():
+    if not 'account_info' in item.keys():
+        if not talker_id in UserList.keys():
+            # 首次收到消息 添加用户
             updateUserList(talker_id=talker_id,
                            last_msg_timestamp=last_msg_timestamp)
-        else:
-            updateUserList_SysMsg(talker_id=talker_id,
-                                  name=item['account_info']['name'],
-                                  picurl=item['account_info']['pic_url'],
-                                  last_msg_timestamp=last_msg_timestamp)
+        if (UserList[talker_id]['last_avatar_timestamp'] -
+                int(time.time()*1000000)) >= AVATAR_TIMEOUT*1000000:
+            # 头像超时后更新头像
+            updateUserList(talker_id=talker_id)
+    else:
+        # 系统消息
+        updateUserList(talker_id=talker_id,
+                       last_msg_timestamp=last_msg_timestamp,
+                       sysinfo=(item['account_info']['name'],
+                                item['account_info']['pic_url']))
 
     updateMsgList(talker_id, last_msg_timestamp)
 
@@ -123,7 +137,12 @@ def getLatestMessage():
         last_msg_timestamp = item['session_ts']
         talker_id = str(item['talker_id'])
 
-        if int(last_msg_timestamp) > UserList[talker_id]['last_msg_timestamp']:
+        if not talker_id in UserList.keys():
+            newMessage_flag = True
+            newMessage(item)
+
+        elif int(last_msg_timestamp
+                 ) > UserList[talker_id]['last_msg_timestamp']:
             newMessage_flag = True
             newMessage(item)
 
