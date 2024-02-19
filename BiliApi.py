@@ -1,6 +1,6 @@
 import requests
 import WBISign
-
+import logging
 
 class ApiError(RuntimeError):
 
@@ -37,7 +37,9 @@ class BiliApi:
         if res['code'] == 0:
             return res['data']
         else:
-            raise ApiError
+            logging.error(res['code'])
+            logging.error(res['message'])
+            raise ApiError(res['code'],res['message'])
 
     def getUserInfo(self, user_mid: int, photo: bool = False) -> dict:
         # https://api.bilibili.com/x/web-interface/card?mid={mid}&photo={photo}
